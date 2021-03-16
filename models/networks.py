@@ -463,6 +463,8 @@ class UnetGenerator(nn.Module):
     def forward(self, input):
         """Standard forward"""
         return self.model(input)
+    def extract_representation(self, input):
+        return self.model.extract_representation(input)
 
 
 class UnetSkipConnectionBlock(nn.Module):
@@ -486,7 +488,13 @@ class UnetSkipConnectionBlock(nn.Module):
             use_dropout (bool)  -- if use dropout layers.
         """
         super(UnetSkipConnectionBlock, self).__init__()
+
         self.outermost = outermost
+        self.innermost = innermost
+        self.submodule = submodule
+        self.use_dropout = use_dropout
+        self.dropout = nn.Dropout(0.5)
+        
         if type(norm_layer) == functools.partial:
             use_bias = norm_layer.func == nn.InstanceNorm2d
         else:
@@ -506,14 +514,23 @@ class UnetSkipConnectionBlock(nn.Module):
                                         padding=1)
             down = [downconv]
             up = [uprelu, upconv, nn.Tanh()]
-            model = down + [submodule] + up
+
+            self.down = nn.Sequential(*down)
+            self.up = nn.Sequential(*up) 
+
+
+            # model = down + [submodule] + up
         elif innermost:
             upconv = nn.ConvTranspose2d(inner_nc, outer_nc,
                                         kernel_size=4, stride=2,
                                         padding=1, bias=use_bias)
             down = [downrelu, downconv]
             up = [uprelu, upconv, upnorm]
-            model = down + up
+
+            self.down = nn.Sequential(*down)
+            self.up = nn.Sequential(*up) 
+
+            # model = down + up
         else:
             upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
                                         kernel_size=4, stride=2,
@@ -521,18 +538,69 @@ class UnetSkipConnectionBlock(nn.Module):
             down = [downrelu, downconv, downnorm]
             up = [uprelu, upconv, upnorm]
 
-            if use_dropout:
-                model = down + [submodule] + up + [nn.Dropout(0.5)]
-            else:
-                model = down + [submodule] + up
+            self.down = nn.Sequential(*down)
+            self.up = nn.Sequential(*up) 
 
-        self.model = nn.Sequential(*model)
+            # if use_dropout:
+            #     model = down + [submodule] + up + [nn.Dropout(0.5)]
+            # else:
+            #     model = down + [submodule] + up
+
+        # self.model = nn.Sequential(*model)
+
+    def extract_representation(self, x):
+      o = None 
+      if self.outermost: 
+        o = self.down(x)
+        o = self.submodule.extract_representation(o)
+  
+      elif self.innermost:
+        o = self.down(x)
+        # import pdb 
+        # pdb.set_trace()
+      else:
+        o = self.down(x)
+        o = self.submodule.extract_representation(o)
+   
+      # if self.outermost:
+      return o 
+      # else:
+      #    return torch.cat([x, o], 1)
 
     def forward(self, x):
-        if self.outermost:
-            return self.model(x)
-        else:   # add skip connections
-            return torch.cat([x, self.model(x)], 1)
+
+      o = None 
+      if self.outermost: 
+        o = self.down(x)
+        o = self.submodule(o)
+        o = self.up(o)
+      elif self.innermost:
+        o = self.down(x)
+        o = self.up(o)
+      else:
+        if self.use_dropout:
+          o = self.down(x)
+          o = self.submodule(o)
+          o = self.up(o)
+          o = self.dropout(o)
+        else:
+          o = self.down(x)
+          o = self.submodule(o)
+          o = self.up(o)
+
+      if self.outermost:
+       return o 
+      else:
+        return torch.cat([x, o], 1)
+
+
+
+    # def forward(self, x):
+
+    #     if self.outermost:
+    #         return self.model(x)
+    #     else:   # add skip connections
+    #         return torch.cat([x, self.model(x)], 1)
 
 
 class NLayerDiscriminator(nn.Module):
